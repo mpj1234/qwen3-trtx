@@ -3,10 +3,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <limits>
 #include <numeric>
 #include <random>
-#include <set>
 #include <utility>
 #include <vector>
 #include <opencv2/opencv.hpp>
@@ -15,8 +13,12 @@
 #include "utils.h"
 #include "model.h"
 #include "config.h"
-#include "calibrator.h"
 #include "NvInfer.h"
+#include "tokenizer.hpp"
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 using namespace nvinfer1;
 // static Logger gLogger(nvinfer1::ILogger::Severity::kVERBOSE);
@@ -160,7 +162,7 @@ std::vector<float> compute_default_inv_freq() {
     return inv_freq;
 }
 
-std::pair<std::vector<float>, std::vector<float>> build_default_rope(
+std::pair<std::vector<float>, std::vector<float> > build_default_rope(
     const std::vector<int32_t>& position_ids) {
     const int seq_len = static_cast<int>(position_ids.size());
     const int rotary_dim = static_cast<int>(static_cast<float>(kHeadDim) * kPartialRotaryFactor);
@@ -216,7 +218,7 @@ unsigned int cumprod(const Dims& dims) {
 }
 
 void print_topk_logits(const std::vector<float>& logits, int topk) {
-    std::vector<std::pair<int, float>> id_logit_pairs;
+    std::vector<std::pair<int, float> > id_logit_pairs;
     id_logit_pairs.reserve(logits.size());
     for (int i = 0; i < static_cast<int>(logits.size()); ++i) {
         id_logit_pairs.emplace_back(i, logits[i]);
@@ -233,14 +235,6 @@ void print_topk_logits(const std::vector<float>& logits, int topk) {
         [](const std::pair<int, float>& a, const std::pair<int, float>& b) {
             return a.second > b.second;
         });
-
-    std::cout << "[INFO] top-" << topk << " logits:" << std::endl;
-    for (int i = 0; i < topk; ++i) {
-        std::cout << "  rank=" << i
-                  << " token_id=" << id_logit_pairs[i].first
-                  << " logit=" << id_logit_pairs[i].second
-                  << std::endl;
-    }
 }
 
 std::pair<int32_t, float> select_top1(const std::vector<float>& logits) {
@@ -257,7 +251,7 @@ bool is_eos_token(int32_t token_id) {
 std::pair<int32_t, float> sample_token(const std::vector<float>& logits, std::mt19937& rng) {
     assert(!logits.empty());
 
-    std::vector<std::pair<int32_t, float>> candidates;
+    std::vector<std::pair<int32_t, float> > candidates;
     candidates.reserve(logits.size());
     for (int32_t i = 0; i < static_cast<int32_t>(logits.size()); ++i) {
         candidates.emplace_back(i, logits[i] / kTemperature);
@@ -284,7 +278,7 @@ std::pair<int32_t, float> sample_token(const std::vector<float>& logits, std::mt
         probs[i] = std::exp(candidates[i].second - max_logit);
         sum += probs[i];
     }
-    for (float& prob : probs) {
+    for (float& prob: probs) {
         prob /= sum;
     }
 
@@ -302,7 +296,7 @@ std::pair<int32_t, float> sample_token(const std::vector<float>& logits, std::mt
         candidates.resize(keep_count);
         probs.resize(keep_count);
         float renorm = std::accumulate(probs.begin(), probs.end(), 0.0f);
-        for (float& prob : probs) {
+        for (float& prob: probs) {
             prob /= renorm;
         }
     }
@@ -375,9 +369,9 @@ public:
         const auto output_shape = mContext->getTensorShape(kOutputTensorName);
         std::vector<float> output_data(cumprod(output_shape));
         CUDA_CHECK(cudaMemcpy(output_data.data(),
-                              mOutputDevice,
-                              output_data.size() * sizeof(float),
-                              cudaMemcpyDeviceToHost));
+            mOutputDevice,
+            output_data.size() * sizeof(float),
+            cudaMemcpyDeviceToHost));
         return output_data;
     }
 
@@ -392,19 +386,10 @@ public:
             const auto [token_id, score] = kDoSample ? sample_token(logits, mRng) : select_top1(logits);
             generated_ids.push_back(token_id);
             input_ids.push_back(token_id);
-            std::cout << "[INFO] decode step=" << step
-                      << " token_id=" << token_id
-                      << (kDoSample ? " prob=" : " logit=") << score
-                      << std::endl;
             if (is_eos_token(token_id)) {
-                std::cout << "[INFO] stop on eos token at step=" << step << std::endl;
                 break;
             }
             ++step;
-        }
-
-        if (static_cast<int>(input_ids.size()) >= mMaxSeqLen) {
-            std::cout << "[INFO] stop on max sequence length=" << mMaxSeqLen << std::endl;
         }
 
         return generated_ids;
@@ -417,10 +402,10 @@ private:
         const size_t max_mask_bytes = static_cast<size_t>(mMaxSeqLen) * mMaxSeqLen * sizeof(float);
         const size_t max_output_bytes = static_cast<size_t>(kVocabSize) * sizeof(float);
         const size_t cache_elems_per_layer =
-            static_cast<size_t>(kBatchSize) * kNumKeyValueHeads * mMaxSeqLen * kHeadDim;
+                static_cast<size_t>(kBatchSize) * kNumKeyValueHeads * mMaxSeqLen * kHeadDim;
         mCacheElemsPerLayer = cache_elems_per_layer;
         const size_t total_cache_bytes =
-            static_cast<size_t>(kNumHiddenLayers) * cache_elems_per_layer * sizeof(float);
+                static_cast<size_t>(kNumHiddenLayers) * cache_elems_per_layer * sizeof(float);
 
         CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&mInputIdsDevice), max_input_ids_bytes));
         CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&mCosDevice), max_rope_bytes));
@@ -453,17 +438,13 @@ private:
             const std::string key_cache_input_name = getKeyCacheInputName(layer_idx);
             const std::string value_cache_input_name = getValueCacheInputName(layer_idx);
             assert(mContext->setInputShape(key_cache_input_name.c_str(),
-                                           Dims4{kBatchSize, kNumKeyValueHeads, 0, kHeadDim}));
+                Dims4{kBatchSize, kNumKeyValueHeads, 0, kHeadDim}));
             assert(mContext->setInputShape(value_cache_input_name.c_str(),
-                                           Dims4{kBatchSize, kNumKeyValueHeads, 0, kHeadDim}));
+                Dims4{kBatchSize, kNumKeyValueHeads, 0, kHeadDim}));
         }
 
         const auto output_shape = mContext->getTensorShape(kOutputTensorName);
-        std::cout << "[INFO] output shape: ";
-        for (int i = 0; i < output_shape.nbDims; ++i) {
-            std::cout << output_shape.d[i] << " ";
-        }
-        std::cout << std::endl;
+        (void)output_shape;
     }
 
     void upload_inputs(const std::vector<int32_t>& input_ids,
@@ -471,21 +452,21 @@ private:
                        const std::vector<float>& sin,
                        const std::vector<float>& mask) {
         CUDA_CHECK(cudaMemcpy(mInputIdsDevice,
-                              input_ids.data(),
-                              input_ids.size() * sizeof(int32_t),
-                              cudaMemcpyHostToDevice));
+            input_ids.data(),
+            input_ids.size() * sizeof(int32_t),
+            cudaMemcpyHostToDevice));
         CUDA_CHECK(cudaMemcpy(mCosDevice,
-                              cos.data(),
-                              cos.size() * sizeof(float),
-                              cudaMemcpyHostToDevice));
+            cos.data(),
+            cos.size() * sizeof(float),
+            cudaMemcpyHostToDevice));
         CUDA_CHECK(cudaMemcpy(mSinDevice,
-                              sin.data(),
-                              sin.size() * sizeof(float),
-                              cudaMemcpyHostToDevice));
+            sin.data(),
+            sin.size() * sizeof(float),
+            cudaMemcpyHostToDevice));
         CUDA_CHECK(cudaMemcpy(mMaskDevice,
-                              mask.data(),
-                              mask.size() * sizeof(float),
-                              cudaMemcpyHostToDevice));
+            mask.data(),
+            mask.size() * sizeof(float),
+            cudaMemcpyHostToDevice));
     }
 
     void bind_tensors() {
@@ -531,23 +512,100 @@ private:
     std::mt19937 mRng;
 };
 
-int main() {
-    std::string engine_model = "../models/test.engine";
-    std::string input_data_path = "F:\\LLM\\transformers-4.57.6\\input_ids.txt";
+int legacy_main() {
+    // 设置控制台为 UTF-8 编码
+#ifdef _WIN32
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+#endif
 
-    auto input_data = read_input<int32_t>(input_data_path);
-    assert(!input_data.empty());
+    // std::string engine_model = "../models/test.engine";
+    // std::string input_data_path = "F:\\LLM\\transformers-4.57.6\\input_ids.txt";
+    //
+    // auto input_data = read_input<int32_t>(input_data_path);
+    // assert(!input_data.empty());
+    //
+    // Qwen3PrefillRunner runner(engine_model, kMaxSeqLen);
+    // auto prefill_output = runner.run(input_data);
+    // print_topk_logits(prefill_output, 10);
+    // save_output("../models/output.txt", prefill_output);
+    //
+    // auto generated_ids = runner.generate(input_data);
+    // save_output("../models/generated_ids.txt", generated_ids);
+    //
+    // std::vector<int32_t> full_sequence = input_data;
+    // full_sequence.insert(full_sequence.end(), generated_ids.begin(), generated_ids.end());
+    // save_output("../models/full_sequence.txt", full_sequence);
+
+
+    auto tokenizer = tokenizer::AutoTokenizer::from_pretrained(R"(F:\LLM\modelscope\hub\models\Qwen\Qwen3-0.6B)");
+    std::string prompt = "<|im_start|>system\n"
+        "你是一个专业的AI助手，请用中文回答用户的问题。<|im_end|>\n"
+        "<|im_start|>user\n"
+        "你好！你能介绍一下你自己吗？<|im_end|>\n"
+        "<|im_start|>assistant\n";
+    // 编码 (Encode)
+    std::vector<int> ids = tokenizer->encode(prompt);
+
+    // 解码 (Decode)
+    std::string decoded = tokenizer->decode(ids);
+
+    std::cout << "Encoded IDs: ";
+    for (int id: ids) std::cout << id << " ";
+    std::cout << "\nDecoded: " << decoded << std::endl;
+
+    return 0;
+}
+
+int main() {
+#ifdef _WIN32
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+#endif
+
+    const std::string engine_model = "../models/test.engine";
+    auto tokenizer = tokenizer::AutoTokenizer::from_pretrained(R"(F:\LLM\modelscope\hub\models\Qwen\Qwen3-0.6B)");
+    assert(tokenizer != nullptr);
+
+    const std::string prompt = "<|im_start|>system\n"
+        "你是一个专业的AI助手，请用中文回答用户的问题。<|im_end|>\n"
+        "<|im_start|>user\n"
+        "你好！你能介绍一下你自己吗？<|im_end|>\n"
+        "<|im_start|>assistant\n";
+
+    std::vector<int> encoded_ids = tokenizer->encode(prompt);
+    std::vector<int32_t> input_ids(encoded_ids.begin(), encoded_ids.end());
+    assert(!input_ids.empty());
+
+    // std::cout << "[INFO] prompt ids: ";
+    // for (int32_t id : input_ids) {
+    //     std::cout << id << " ";
+    // }
+    // std::cout << std::endl;
 
     Qwen3PrefillRunner runner(engine_model, kMaxSeqLen);
-    auto prefill_output = runner.run(input_data);
+    auto prefill_output = runner.run(input_ids);
     print_topk_logits(prefill_output, 10);
     save_output("../models/output.txt", prefill_output);
 
-    auto generated_ids = runner.generate(input_data);
+    auto generated_ids = runner.generate(input_ids);
     save_output("../models/generated_ids.txt", generated_ids);
 
-    std::vector<int32_t> full_sequence = input_data;
+    std::vector<int32_t> full_sequence = input_ids;
     full_sequence.insert(full_sequence.end(), generated_ids.begin(), generated_ids.end());
     save_output("../models/full_sequence.txt", full_sequence);
+
+    std::vector<int> generated_ids_int(generated_ids.begin(), generated_ids.end());
+    std::vector<int> full_sequence_int(full_sequence.begin(), full_sequence.end());
+
+    std::cout << "[INFO] prompt text:\n" << tokenizer->decode(encoded_ids, false) << std::endl;
+    // std::cout << "[INFO] generated ids: ";
+    // for (int32_t id : generated_ids) {
+        // std::cout << id << " ";
+    // }
+    std::cout << std::endl;
+    // std::cout << "[INFO] generated text:\n" << tokenizer->decode(generated_ids_int, false) << std::endl;
+    std::cout << "[INFO] full decoded text:\n" << tokenizer->decode(full_sequence_int, false) << std::endl;
+
     return 0;
 }
