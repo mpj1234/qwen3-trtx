@@ -640,6 +640,7 @@ private:
     std::mt19937 mRng;
 };
 
+#if 0
 int run_dialog_mode() {
     const std::string engine_model = "../models/test.engine";
     const std::string dialog_log_path = "../models/dialog_utf8.txt";
@@ -699,7 +700,101 @@ int run_dialog_mode() {
 
     return 0;
 }
+#endif
 
+void print_usage(const char* exe_name) {
+    std::cerr << "Arguments not right!" << std::endl;
+    std::cerr << exe_name << " -s [qwen3_wts_dir] [.trt]" << std::endl;
+    std::cerr << exe_name << " -d [.trt] [tokenizer_dir]" << std::endl;
+}
+
+bool parse_args(int argc, char** argv, std::string& wts_name, std::string& engine_name,
+                std::string& tokenizer_dir, bool& is_serialize) {
+    if (argc < 2) {
+        return false;
+    }
+
+    const std::string mode = argv[1];
+    if (mode == "-s") {
+        if (argc != 4) {
+            return false;
+        }
+        is_serialize = true;
+        wts_name = argv[2];
+        engine_name = argv[3];
+        return true;
+    }
+    if (mode == "-d") {
+        if (argc != 4) {
+            return false;
+        }
+        is_serialize = false;
+        wts_name.clear();
+        engine_name = argv[2];
+        tokenizer_dir = argv[3];
+        return true;
+    }
+    return false;
+}
+
+int run_dialog_mode_cli(const std::string& engine_model, const std::string& tokenizer_dir) {
+    const std::string dialog_log_path = "../models/dialog_utf8.txt";
+
+    auto tokenizer = tokenizer::AutoTokenizer::from_pretrained(tokenizer_dir);
+    assert(tokenizer != nullptr);
+
+    const std::string system_prompt = "你是一个专业的AI助手，请用中文回答用户的问题。";
+    std::string conversation = "<|im_start|>system\n" + system_prompt + "<|im_end|>\n";
+    append_utf8_text(dialog_log_path, "===== New Session =====\n");
+    append_utf8_text(dialog_log_path, "[system]\n" + system_prompt + "\n\n");
+
+    Qwen3PrefillRunner runner(engine_model, kMaxSeqLen);
+    std::cout << "[INFO] dialog mode ready, type `exit` to quit." << std::endl;
+
+    while (true) {
+        std::cout << "\nuser> " << std::flush;
+        std::string user_input;
+        if (!read_console_utf8_line(user_input)) {
+            break;
+        }
+        if (user_input == "exit" || user_input == "quit") {
+            break;
+        }
+        if (user_input.empty()) {
+            continue;
+        }
+
+        const std::string prompt = conversation
+            + "<|im_start|>user\n" + user_input + "<|im_end|>\n"
+            + "<|im_start|>assistant\n";
+        std::vector<int> encoded_ids = tokenizer->encode(prompt);
+        std::vector<int32_t> input_ids(encoded_ids.begin(), encoded_ids.end());
+        if (input_ids.empty()) {
+            std::cerr << "[ERROR] empty prompt ids" << std::endl;
+            continue;
+        }
+        if (static_cast<int>(input_ids.size()) >= kMaxSeqLen) {
+            std::cerr << "[ERROR] prompt too long: " << input_ids.size()
+                      << " >= " << kMaxSeqLen << std::endl;
+            continue;
+        }
+
+        auto generated_ids = runner.generate(input_ids);
+        std::vector<int> generated_ids_int(generated_ids.begin(), generated_ids.end());
+        const std::string assistant_reply = strip_assistant_reply(tokenizer->decode(generated_ids_int, false));
+
+        std::cout << "assistant> " << assistant_reply << std::endl;
+        append_utf8_text(dialog_log_path, "[user]\n" + user_input + "\n");
+        append_utf8_text(dialog_log_path, "[assistant]\n" + assistant_reply + "\n\n");
+
+        conversation += "<|im_start|>user\n" + user_input + "<|im_end|>\n";
+        conversation += "<|im_start|>assistant\n" + assistant_reply + "<|im_end|>\n";
+    }
+
+    return 0;
+}
+
+#if 0
 int main() {
 #ifdef _WIN32
     SetConsoleOutputCP(CP_UTF8);
@@ -760,4 +855,31 @@ int main() {
     std::cout << "[INFO] full decoded text:\n" << tokenizer->decode(full_sequence_int, false) << std::endl;
 
     return 0;
+}
+#endif
+
+int main(int argc, char** argv) {
+#ifdef _WIN32
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+    if (_isatty(_fileno(stdin))) {
+        _setmode(_fileno(stdin), _O_U16TEXT);
+    }
+#endif
+
+    std::string wts_name;
+    std::string engine_name;
+    std::string tokenizer_dir;
+    bool is_serialize = false;
+    if (!parse_args(argc, argv, wts_name, engine_name, tokenizer_dir, is_serialize)) {
+        print_usage(argv[0]);
+        return -1;
+    }
+
+    if (is_serialize) {
+        serialize_engine(wts_name, engine_name);
+        return 0;
+    }
+
+    return run_dialog_mode_cli(engine_name, tokenizer_dir);
 }
