@@ -2,7 +2,10 @@
 
 [中文版本](README.md)
 
-Deploy the Qwen3 model with TensorRT / TensorRTX style inference.
+Deploy the Qwen3-0.6B model with TensorRT / TensorRTX style inference.
+
+* ModelScope [Qwen3-0.6B](https://www.modelscope.cn/models/Qwen/Qwen3-0.6B)
+* Hugging Face [Qwen3-0.6B](https://huggingface.co/Qwen/Qwen3-0.6B)
 
 ## Features
 

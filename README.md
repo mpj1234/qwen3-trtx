@@ -2,7 +2,10 @@
 
 [English Version](README_EN.md)
 
-基于 TensorRT / TensorRTX 方式部署 Qwen3 模型。
+基于 TensorRT / TensorRTX 方式部署 Qwen3-0.6B 模型。
+
+* ModelScope [Qwen3-0.6B](https://www.modelscope.cn/models/Qwen/Qwen3-0.6B)
+* Hugging Face [Qwen3-0.6B](https://huggingface.co/Qwen/Qwen3-0.6B)
 
 ## 功能
 
