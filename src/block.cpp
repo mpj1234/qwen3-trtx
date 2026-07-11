@@ -5,6 +5,7 @@
 #include <memory>
 #include "config.h"
 #include "block.h"
+#include "apply_rotary_pos_emb_plugin.h"
 #include "repeat_kv_plugin.h"
 
 namespace {
@@ -403,6 +404,23 @@ std::pair<nvinfer1::ILayer*, nvinfer1::ILayer*> applyRotaryPosEmb(nvinfer1::INet
     return {q_embed, k_embed};
 }
 
+std::pair<nvinfer1::ILayer*, nvinfer1::ILayer*> applyRotaryPosEmbPlugin(nvinfer1::INetworkDefinition* network,
+                                                                         nvinfer1::ITensor& q,
+                                                                         nvinfer1::ITensor& k,
+                                                                         nvinfer1::ITensor& cos,
+                                                                         nvinfer1::ITensor& sin) {
+    nvinfer1::ITensor* inputs[] = {&q, &k, &cos, &sin};
+    auto* plugin = createApplyRotaryPosEmbPlugin();
+    assert(plugin != nullptr);
+    auto* layer = network->addPluginV2(inputs, 4, *plugin);
+    assert(layer != nullptr);
+    auto* qIdentity = network->addIdentity(*layer->getOutput(0));
+    auto* kIdentity = network->addIdentity(*layer->getOutput(1));
+    assert(qIdentity != nullptr);
+    assert(kIdentity != nullptr);
+    return {qIdentity, kIdentity};
+}
+
 // 沿着 dim=1 (Heads) 重复 KV 张量 (GQA 广播)
 // Along dim=1 (Heads), repeat KV tensors with repeat_interleave semantics (GQA)
 // input_kv: [B, num_kv_heads, S, head_dim] -> output: [B, num_q_heads, S, head_dim]
@@ -532,9 +550,9 @@ Qwen3Attention(nvinfer1::INetworkDefinition* network,
     auto v_reshape = reshape(network, *v_proj->getOutput(0), {kBatchSize, -1, num_key_value_heads, head_dim});
     auto value_states = transpose(network, *v_reshape->getOutput(0), {0, 2, 1, 3});
 
-    auto [q_embed, k_embed] = applyRotaryPosEmb(network,
-                                                *query_states->getOutput(0), *key_states->getOutput(0),
-                                                cos, sin);
+    auto [q_embed, k_embed] = applyRotaryPosEmbPlugin(network,
+                                                      *query_states->getOutput(0), *key_states->getOutput(0),
+                                                      cos, sin);
 
     // cat kv cache
     nvinfer1::ITensor* k_cache_concat[] = {&k_cache_input, k_embed->getOutput(0)};

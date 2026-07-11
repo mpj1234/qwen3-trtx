@@ -24,7 +24,12 @@ using namespace nvinfer1;
 // static Logger gLogger(nvinfer1::ILogger::Severity::kVERBOSE);
 static Logger gLogger;
 
-void serialize_engine(std::string& wts_name, std::string& engine_name) {
+[[noreturn]] void fail_trt(const std::string& msg) {
+    std::cerr << "[ERROR] " << msg << std::endl;
+    std::abort();
+}
+
+void serialize_engine(const std::string& wts_name, const std::string& engine_name) {
     // Create builder
     IBuilder* builder = createInferBuilder(gLogger);
     IBuilderConfig* config = builder->createBuilderConfig();
@@ -46,7 +51,7 @@ void serialize_engine(std::string& wts_name, std::string& engine_name) {
     delete builder;
 }
 
-void deserialize_engine(std::string& engine_name, IRuntime** runtime, ICudaEngine** engine,
+void deserialize_engine(const std::string& engine_name, IRuntime** runtime, ICudaEngine** engine,
                         IExecutionContext** context) {
     std::ifstream file(engine_name, std::ios::binary);
     if (!file.good()) {
@@ -363,7 +368,9 @@ public:
         upload_inputs(input_ids, rope.first, rope.second, mask);
         bind_tensors();
 
-        assert(mContext->enqueueV3(mStream));
+        if (!mContext->enqueueV3(mStream)) {
+            fail_trt("enqueueV3 failed");
+        }
         CUDA_CHECK(cudaStreamSynchronize(mStream));
 
         const auto output_shape = mContext->getTensorShape(kOutputTensorName);
@@ -429,22 +436,50 @@ private:
     }
 
     void set_shapes(int seq) {
-        assert(mContext->setInputShape(kInputIdsName, Dims2{kBatchSize, seq}));
-        assert(mContext->setInputShape(kInputCosName, Dims3{kBatchSize, seq, kHeadDim}));
-        assert(mContext->setInputShape(kInputSinName, Dims3{kBatchSize, seq, kHeadDim}));
-        assert(mContext->setInputShape(kInputMaskName, Dims4{kBatchSize, 1, seq, seq}));
+        if (!mContext->setInputShape(kInputIdsName, Dims2{kBatchSize, seq})) {
+            fail_trt("setInputShape failed for input_ids");
+        }
+        if (!mContext->setInputShape(kInputCosName, Dims3{kBatchSize, seq, kHeadDim})) {
+            fail_trt("setInputShape failed for input_cos");
+        }
+        if (!mContext->setInputShape(kInputSinName, Dims3{kBatchSize, seq, kHeadDim})) {
+            fail_trt("setInputShape failed for input_sin");
+        }
+        if (!mContext->setInputShape(kInputMaskName, Dims4{kBatchSize, 1, seq, seq})) {
+            fail_trt("setInputShape failed for input_mask");
+        }
 
         for (int layer_idx = 0; layer_idx < kNumHiddenLayers; ++layer_idx) {
             const std::string key_cache_input_name = getKeyCacheInputName(layer_idx);
             const std::string value_cache_input_name = getValueCacheInputName(layer_idx);
-            assert(mContext->setInputShape(key_cache_input_name.c_str(),
-                Dims4{kBatchSize, kNumKeyValueHeads, 0, kHeadDim}));
-            assert(mContext->setInputShape(value_cache_input_name.c_str(),
-                Dims4{kBatchSize, kNumKeyValueHeads, 0, kHeadDim}));
+            if (!mContext->setInputShape(key_cache_input_name.c_str(),
+                                         Dims4{kBatchSize, kNumKeyValueHeads, 0, kHeadDim})) {
+                fail_trt("setInputShape failed for " + key_cache_input_name);
+            }
+            if (!mContext->setInputShape(value_cache_input_name.c_str(),
+                                         Dims4{kBatchSize, kNumKeyValueHeads, 0, kHeadDim})) {
+                fail_trt("setInputShape failed for " + value_cache_input_name);
+            }
+        }
+
+        if (!mContext->allInputDimensionsSpecified()) {
+            fail_trt("not all input dimensions are specified");
+        }
+
+        const int infer_status = mContext->inferShapes(0, nullptr);
+        if (infer_status < 0) {
+            fail_trt("inferShapes failed");
         }
 
         const auto output_shape = mContext->getTensorShape(kOutputTensorName);
-        (void)output_shape;
+        // std::cout << "[INFO] output shape: ";
+        for (int i = 0; i < output_shape.nbDims; ++i) {
+            // std::cout << output_shape.d[i] << " ";
+            if (output_shape.d[i] < 0) {
+                fail_trt("output shape still contains dynamic dim after inferShapes");
+            }
+        }
+        // std::cout << std::endl;
     }
 
     void upload_inputs(const std::vector<int32_t>& input_ids,
@@ -512,58 +547,17 @@ private:
     std::mt19937 mRng;
 };
 
-int legacy_main() {
-    // 设置控制台为 UTF-8 编码
-#ifdef _WIN32
-    SetConsoleOutputCP(CP_UTF8);
-    SetConsoleCP(CP_UTF8);
-#endif
-
-    // std::string engine_model = "../models/test.engine";
-    // std::string input_data_path = "F:\\LLM\\transformers-4.57.6\\input_ids.txt";
-    //
-    // auto input_data = read_input<int32_t>(input_data_path);
-    // assert(!input_data.empty());
-    //
-    // Qwen3PrefillRunner runner(engine_model, kMaxSeqLen);
-    // auto prefill_output = runner.run(input_data);
-    // print_topk_logits(prefill_output, 10);
-    // save_output("../models/output.txt", prefill_output);
-    //
-    // auto generated_ids = runner.generate(input_data);
-    // save_output("../models/generated_ids.txt", generated_ids);
-    //
-    // std::vector<int32_t> full_sequence = input_data;
-    // full_sequence.insert(full_sequence.end(), generated_ids.begin(), generated_ids.end());
-    // save_output("../models/full_sequence.txt", full_sequence);
-
-
-    auto tokenizer = tokenizer::AutoTokenizer::from_pretrained(R"(F:\LLM\modelscope\hub\models\Qwen\Qwen3-0.6B)");
-    std::string prompt = "<|im_start|>system\n"
-        "你是一个专业的AI助手，请用中文回答用户的问题。<|im_end|>\n"
-        "<|im_start|>user\n"
-        "你好！你能介绍一下你自己吗？<|im_end|>\n"
-        "<|im_start|>assistant\n";
-    // 编码 (Encode)
-    std::vector<int> ids = tokenizer->encode(prompt);
-
-    // 解码 (Decode)
-    std::string decoded = tokenizer->decode(ids);
-
-    std::cout << "Encoded IDs: ";
-    for (int id: ids) std::cout << id << " ";
-    std::cout << "\nDecoded: " << decoded << std::endl;
-
-    return 0;
-}
-
 int main() {
 #ifdef _WIN32
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
 #endif
 
+    const std::string wts_path = "F:\\LLM\\transformers-4.57.6\\wts";
     const std::string engine_model = "../models/test.engine";
+
+    serialize_engine(wts_path, engine_model);
+
     auto tokenizer = tokenizer::AutoTokenizer::from_pretrained(R"(F:\LLM\modelscope\hub\models\Qwen\Qwen3-0.6B)");
     assert(tokenizer != nullptr);
 
