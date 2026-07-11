@@ -781,6 +781,7 @@ int run_dialog_mode_cli(const std::string& engine_model, const std::string& toke
 
         auto generated_ids = runner.generate(input_ids);
         std::vector<int> generated_ids_int(generated_ids.begin(), generated_ids.end());
+        // const std::string assistant_reply = remove_think_block(strip_assistant_reply(tokenizer->decode(generated_ids_int, false));
         const std::string assistant_reply = strip_assistant_reply(tokenizer->decode(generated_ids_int, false));
 
         std::cout << "assistant> " << assistant_reply << std::endl;
