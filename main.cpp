@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <fstream>
 #include <numeric>
 #include <random>
+#include <string>
 #include <utility>
 #include <vector>
 #include <opencv2/opencv.hpp>
@@ -17,6 +19,8 @@
 #include "tokenizer.hpp"
 
 #ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
 #include <windows.h>
 #endif
 
@@ -28,6 +32,95 @@ static Logger gLogger;
     std::cerr << "[ERROR] " << msg << std::endl;
     std::abort();
 }
+
+std::string strip_assistant_reply(std::string text) {
+    const std::string end_tag = "<|im_end|>";
+    const size_t end_pos = text.find(end_tag);
+    if (end_pos != std::string::npos) {
+        text.erase(end_pos);
+    }
+    while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) {
+        text.pop_back();
+    }
+    return text;
+}
+
+std::string remove_think_block(std::string text) {
+    const std::string think_begin = "<think>";
+    const std::string think_end = "</think>";
+    while (true) {
+        const size_t begin = text.find(think_begin);
+        if (begin == std::string::npos) {
+            break;
+        }
+        const size_t end = text.find(think_end, begin);
+        if (end == std::string::npos) {
+            text.erase(begin);
+            break;
+        }
+        text.erase(begin, end + think_end.size() - begin);
+    }
+    while (!text.empty() && (text.front() == '\n' || text.front() == '\r' || text.front() == ' ')) {
+        text.erase(text.begin());
+    }
+    return text;
+}
+
+void strip_utf8_bom_inplace(std::string& text) {
+    static const std::string kUtf8Bom = "\xEF\xBB\xBF";
+    if (text.rfind(kUtf8Bom, 0) == 0) {
+        text.erase(0, kUtf8Bom.size());
+    }
+}
+
+void append_utf8_text(const std::string& path, const std::string& text) {
+    const bool need_bom = !std::ifstream(path, std::ios::binary).good();
+    std::ofstream out(path, std::ios::binary | std::ios::app);
+    if (!out.is_open()) {
+        std::cerr << "[ERROR] failed to open file for utf-8 append: " << path << std::endl;
+        return;
+    }
+    if (need_bom) {
+        static const unsigned char kUtf8Bom[] = {0xEF, 0xBB, 0xBF};
+        out.write(reinterpret_cast<const char*>(kUtf8Bom), sizeof(kUtf8Bom));
+    }
+    out.write(text.data(), static_cast<std::streamsize>(text.size()));
+}
+
+#ifdef _WIN32
+std::string wide_to_utf8(const std::wstring& wide) {
+    if (wide.empty()) {
+        return {};
+    }
+    const int size = WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()),
+                                         nullptr, 0, nullptr, nullptr);
+    std::string utf8(size, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()),
+                        utf8.data(), size, nullptr, nullptr);
+    return utf8;
+}
+
+bool read_console_utf8_line(std::string& out) {
+    if (!_isatty(_fileno(stdin))) {
+        if (!std::getline(std::cin, out)) {
+            return false;
+        }
+        strip_utf8_bom_inplace(out);
+        return true;
+    }
+    std::wstring wide;
+    if (!std::getline(std::wcin, wide)) {
+        return false;
+    }
+    out = wide_to_utf8(wide);
+    strip_utf8_bom_inplace(out);
+    return true;
+}
+#else
+bool read_console_utf8_line(std::string& out) {
+    return static_cast<bool>(std::getline(std::cin, out));
+}
+#endif
 
 void serialize_engine(const std::string& wts_name, const std::string& engine_name) {
     // Create builder
@@ -547,11 +640,76 @@ private:
     std::mt19937 mRng;
 };
 
+int run_dialog_mode() {
+    const std::string engine_model = "../models/test.engine";
+    const std::string dialog_log_path = "../models/dialog_utf8.txt";
+
+    auto tokenizer = tokenizer::AutoTokenizer::from_pretrained(R"(F:\LLM\modelscope\hub\models\Qwen\Qwen3-0.6B)");
+    assert(tokenizer != nullptr);
+
+    const std::string system_prompt = "你是一个专业的AI助手，请用中文回答用户的问题。";
+    std::string conversation = "<|im_start|>system\n" + system_prompt + "<|im_end|>\n";
+    append_utf8_text(dialog_log_path, "===== New Session =====\n");
+    append_utf8_text(dialog_log_path, "[system]\n" + system_prompt + "\n\n");
+
+    Qwen3PrefillRunner runner(engine_model, kMaxSeqLen);
+    std::cout << "[INFO] dialog mode ready, type `exit` to quit." << std::endl;
+
+    while (true) {
+        std::cout << "\nuser> " << std::flush;
+        std::string user_input;
+        if (!read_console_utf8_line(user_input)) {
+            break;
+        }
+        if (user_input == "exit" || user_input == "quit") {
+            break;
+        }
+        if (user_input.empty()) {
+            continue;
+        }
+
+        const std::string prompt = conversation
+            + "<|im_start|>user\n" + user_input + "<|im_end|>\n"
+            + "<|im_start|>assistant\n";
+        std::vector<int> encoded_ids = tokenizer->encode(prompt);
+        std::vector<int32_t> input_ids(encoded_ids.begin(), encoded_ids.end());
+        if (input_ids.empty()) {
+            std::cerr << "[ERROR] empty prompt ids" << std::endl;
+            continue;
+        }
+        if (static_cast<int>(input_ids.size()) >= kMaxSeqLen) {
+            std::cerr << "[ERROR] prompt too long: " << input_ids.size()
+                      << " >= " << kMaxSeqLen << std::endl;
+            continue;
+        }
+
+        auto generated_ids = runner.generate(input_ids);
+        std::vector<int> generated_ids_int(generated_ids.begin(), generated_ids.end());
+        // const std::string assistant_reply = remove_think_block(
+        // strip_assistant_reply(tokenizer->decode(generated_ids_int, false)));
+        const std::string assistant_reply = strip_assistant_reply(tokenizer->decode(generated_ids_int, false));
+
+        std::cout << "assistant> " << assistant_reply << std::endl;
+        append_utf8_text(dialog_log_path, "[user]\n" + user_input + "\n");
+        append_utf8_text(dialog_log_path, "[assistant]\n" + assistant_reply + "\n\n");
+
+        conversation += "<|im_start|>user\n" + user_input + "<|im_end|>\n";
+        conversation += "<|im_start|>assistant\n" + assistant_reply + "<|im_end|>\n";
+    }
+
+    return 0;
+}
+
 int main() {
 #ifdef _WIN32
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
+    if (_isatty(_fileno(stdin))) {
+        _setmode(_fileno(stdin), _O_U16TEXT);
+    }
 #endif
+
+    return run_dialog_mode();
 
     const std::string wts_path = "F:\\LLM\\transformers-4.57.6\\wts";
     const std::string engine_model = "../models/test.engine";
