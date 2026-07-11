@@ -87,4 +87,5 @@ target_link_libraries(qwen3_trtx PRIVATE
         opencv_imgcodecs
         cudart
         cublas
-        nvinfer_10)
+        nvinfer_10
+        onig)
