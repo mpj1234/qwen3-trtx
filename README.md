@@ -12,6 +12,22 @@
 - 支持 Windows 控制台 UTF-8 中文输入与 UTF-8 对话日志输出。
 - 支持过滤模型输出中的 `<think>...</think>` 内容。
 
+## 项目初始化
+
+首次克隆项目后，需要同步并初始化子模块：
+
+```bash
+git clone https://github.com/mpj1234/qwen3-trtx.git
+cd qwen3-trtx
+git submodule update --init --recursive
+```
+
+如果仓库已经拉取过，后续想更新子模块，可执行：
+
+```bash
+git submodule update --init --recursive
+```
+
 ## 编译
 
 使用 CMake 进行配置和编译，例如：

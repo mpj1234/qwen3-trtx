@@ -12,6 +12,22 @@ Deploy the Qwen3 model with TensorRT / TensorRTX style inference.
 - Support UTF-8 Chinese console input and UTF-8 dialog log output on Windows.
 - Filter `<think>...</think>` content from model output.
 
+## Project Initialization
+
+After cloning the repository for the first time, initialize and sync the submodule:
+
+```bash
+git clone https://github.com/mpj1234/qwen3-trtx.git
+cd qwen3-trtx
+git submodule update --init --recursive
+```
+
+If the repository is already cloned and you only need to refresh submodules later, run:
+
+```bash
+git submodule update --init --recursive
+```
+
 ## Build
 
 Use CMake to configure and build the project, for example:
